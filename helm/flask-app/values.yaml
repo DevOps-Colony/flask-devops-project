@@ -1,0 +1,226 @@
+# Default values for flask-app
+replicaCount: 2
+
+image:
+  repository: ""  # Will be set by CI/CD pipeline
+  pullPolicy: IfNotPresent
+  tag: ""  # Will be set by CI/CD pipeline
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "5000"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 5000
+  protocol: TCP
+
+ingress:
+  enabled: true
+  className: "alb"
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/certificate-arn: ""  # Will be set per environment
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '30'
+    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: '3'
+  hosts:
+    - host: flask-app.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - flask-app
+        topologyKey: kubernetes.io/hostname
+
+# Environment specific configuration
+environment: development
+
+# Application configuration
+app:
+  secretKey: ""  # Will be populated from secrets
+  debug: false
+  port: 5000
+  logLevel: INFO
+
+# Database configuration
+database:
+  type: sqlite  # sqlite, postgresql, mysql
+  host: ""
+  port: 5432
+  name: flaskapp
+  username: ""
+  password: ""  # Will be populated from secrets
+  connectionPool:
+    minSize: 5
+    maxSize: 20
+
+# Redis configuration (for session storage)
+redis:
+  enabled: false
+  host: ""
+  port: 6379
+  password: ""  # Will be populated from secrets
+
+# Monitoring configuration
+monitoring:
+  enabled: true
+  prometheus:
+    enabled: true
+    port: 9090
+  grafana:
+    enabled: true
+
+# Logging configuration
+logging:
+  level: INFO
+  format: json
+  output: stdout
+
+# Health checks configuration
+healthCheck:
+  enabled: true
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# Persistence configuration
+persistence:
+  enabled: false
+  size: 8Gi
+  storageClass: gp3
+  accessModes:
+    - ReadWriteOnce
+
+# Network policies
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: ingress-nginx
+      - namespaceSelector:
+          matchLabels:
+            name: monitoring
+  egress:
+    - to: []
+      ports:
+      - protocol: TCP
+        port: 53
+      - protocol: UDP
+        port: 53
+    - to:
+      - namespaceSelector:
+          matchLabels:
+            name: kube-system
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Secrets configuration
+secrets:
+  create: true
+  name: flask-app-secrets
+  annotations: {}
+
+# ConfigMap configuration
+configMap:
+  create: true
+  name: flask-app-config
+  data: {}
+
+# Init containers
+initContainers: []
+
+# Sidecar containers
+sidecars: []
+
+# Additional volumes
+volumes: []
+
+# Additional volume mounts
+volumeMounts: []
+
+# Additional environment variables
+env: []
+
+# Additional environment variables from secrets
+envFromSecrets: []
+
+# Additional environment variables from config maps
+envFromConfigMaps: []

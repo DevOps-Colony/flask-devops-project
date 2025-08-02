@@ -1,0 +1,69 @@
+# Production environment values
+replicaCount: 3
+
+app:
+  debug: false
+  logLevel: WARNING
+
+database:
+  type: postgresql
+  host: flask-app-prod-db.cluster-xxx.ap-south-1.rds.amazonaws.com
+  name: flaskapp_production
+  connectionPool:
+    minSize: 10
+    maxSize: 50
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 60
+  targetMemoryUtilizationPercentage: 70
+
+ingress:
+  annotations:
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-south-1:123456789012:certificate/prod-cert-id"
+    alb.ingress.kubernetes.io/wafv2-acl-arn: "arn:aws:wafv2:ap-south-1:123456789012:regional/webacl/flask-app-waf/xxx"
+  hosts:
+    - host: flask-app.company.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+redis:
+  enabled: true
+  host: flask-app-prod-redis.cluster.cache.amazonaws.com
+
+monitoring:
+  enabled: true
+  prometheus:
+    enabled: true
+  grafana:
+    enabled: true
+
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/arch
+          operator: In
+          values:
+          - amd64
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+    - labelSelector:
+        matchExpressions:
+        - key: app.kubernetes.io/name
+          operator: In
+          values:
+          - flask-app
+      topologyKey: kubernetes.io/hostname

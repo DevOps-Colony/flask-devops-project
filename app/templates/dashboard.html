@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Flask Auth App{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="jumbotron bg-light p-5 rounded">
+            <h1 class="display-4">Welcome, {{ username }}!</h1>
+            <p class="lead">You have successfully logged into the Flask Authentication Application.</p>
+            <hr class="my-4">
+            <p>This is your dashboard where you can access all your account features.</p>
+            <div class="mt-4">
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-body text-center">
+                                <h5 class="card-title">Profile</h5>
+                                <p class="card-text">Manage your profile settings</p>
+                                <button class="btn btn-outline-primary">View Profile</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-body text-center">
+                                <h5 class="card-title">Settings</h5>
+                                <p class="card-text">Configure your preferences</p>
+                                <button class="btn btn-outline-secondary">Settings</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-body text-center">
+                                <h5 class="card-title">Security</h5>
+                                <p class="card-text">Manage your security settings</p>
+                                <button class="btn btn-outline-warning">Security</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

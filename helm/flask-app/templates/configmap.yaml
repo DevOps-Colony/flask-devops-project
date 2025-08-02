@@ -1,0 +1,26 @@
+{{- if .Values.configMap.create }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.configMap.name | default (include "flask-app.fullname" .) }}
+  labels:
+    {{- include "flask-app.labels" . | nindent 4 }}
+data:
+  FLASK_ENV: {{ .Values.environment }}
+  LOG_LEVEL: {{ .Values.logging.level }}
+  LOG_FORMAT: {{ .Values.logging.format }}
+  LOG_OUTPUT: {{ .Values.logging.output }}
+  {{- if .Values.database.type }}
+  DATABASE_TYPE: {{ .Values.database.type }}
+  {{- end }}
+  {{- if .Values.redis.enabled }}
+  REDIS_ENABLED: "true"
+  {{- if .Values.redis.host }}
+  REDIS_HOST: {{ .Values.redis.host }}
+  {{- end }}
+  REDIS_PORT: {{ .Values.redis.port | quote }}
+  {{- end }}
+  {{- with .Values.configMap.data }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+{{- end }}

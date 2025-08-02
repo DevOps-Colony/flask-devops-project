@@ -1,0 +1,33 @@
+# Development environment values
+replicaCount: 1
+
+image:
+  pullPolicy: Always
+
+app:
+  debug: true
+  logLevel: DEBUG
+
+database:
+  type: sqlite
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
+
+ingress:
+  hosts:
+    - host: flask-app-dev.company.internal
+      paths:
+        - path: /
+          pathType: Prefix
+
+monitoring:
+  enabled: false

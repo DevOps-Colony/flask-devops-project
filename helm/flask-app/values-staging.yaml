@@ -1,0 +1,33 @@
+# Staging environment values
+replicaCount: 2
+
+app:
+  debug: false
+  logLevel: INFO
+
+database:
+  type: postgresql
+  host: flask-app-staging-db.cluster-xxx.ap-south-1.rds.amazonaws.com
+  name: flaskapp_staging
+
+resources:
+  limits:
+    cpu: 300m
+    memory: 384Mi
+  requests:
+    cpu: 150m
+    memory: 192Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 5
+
+ingress:
+  annotations:
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-south-1:123456789012:certificate/staging-cert-id"
+  hosts:
+    - host: flask-app-staging.company.com
+      paths:
+        - path: /
+          pathType: Prefix

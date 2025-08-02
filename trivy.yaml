@@ -1,0 +1,43 @@
+# Trivy configuration file for security scanning
+
+# Database
+db:
+  repository: ghcr.io/aquasecurity/trivy-db
+
+# Scan settings
+scan:
+  # Skip files
+  skip-files:
+    - .git/**
+    - node_modules/**
+    - venv/**
+    - __pycache__/**
+    - "*.pyc"
+  
+  # Skip directories
+  skip-dirs:
+    - .git
+    - node_modules
+    - venv
+    - __pycache__
+
+# Vulnerability settings
+vulnerability:
+  type:
+    - os
+    - library
+  
+# Secret scanning
+secret:
+  config: .trivyignore
+
+# Output format
+format: sarif
+
+# Severity levels to report
+severity:
+  - UNKNOWN
+  - LOW
+  - MEDIUM
+  - HIGH
+  - CRITICAL

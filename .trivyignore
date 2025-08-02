@@ -1,0 +1,10 @@
+# Trivy ignore file for false positives
+
+# Example: Ignore specific vulnerabilities
+# CVE-2021-12345
+
+# Ignore test files
+tests/**
+
+# Ignore development dependencies in certain cases
+# DEV-DEPENDENCY-001
