@@ -16,7 +16,7 @@ resource "aws_iam_role" "cluster" {
   })
 
   tags = merge(var.additional_tags, {
-    Name = "${var.project_name}-${var.environment}-cluster-role"
+    Name = "${var.project_name}-${var.environment}-cluster"
   })
 }
 
