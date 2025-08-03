@@ -12,39 +12,45 @@ env:
   EKS_CLUSTER_NAME: flask-app-cluster
   HELM_CHART_PATH: ./helm/flask-app
   SONAR_PROJECT_KEY: flask-devops-project
-  
+
 jobs:
-  # Static Code Analysis and Security Scanning
-  code-quality:
-    name: Code Quality & Security
+  test:
     runs-on: ubuntu-latest
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
-    
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r app/requirements.txt
-    
-    - name: Run unit tests with coverage
+        pip install pytest pytest-cov pytest-flask
+
+    - name: Run tests with coverage
       run: |
-        python -m pytest tests/ --cov=app --cov-report=xml --cov-report=html
-    
-    - name: SonarCloud Scan
-      uses: SonarSource/sonarcloud-github-action@master
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-    
+        python -m pytest tests/ --cov=app --cov-report=xml --cov-report=html --cov-report=term-missing -v
+
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
     - name: Run Trivy vulnerability scanner
       uses: aquasecurity/trivy-action@master
       with:
@@ -52,273 +58,174 @@ jobs:
         scan-ref: '.'
         format: 'sarif'
         output: 'trivy-results.sarif'
-    
+
     - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v2
+      uses: github/codeql-action/upload-sarif@v3
       if: always()
       with:
         sarif_file: 'trivy-results.sarif'
 
-  # Build and Push Docker Image
-  build-and-push:
-    name: Build & Push Docker Image
+  code-quality:
     runs-on: ubuntu-latest
-    needs: code-quality
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
-    
-    outputs:
-      image-tag: ${{ steps.meta.outputs.tags }}
-      image-digest: ${{ steps.build.outputs.digest }}
+    needs: test
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: SonarQube Scan
+      uses: sonarqube-quality-gate-action@master
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [test, security-scan]
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-    
+
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
-    
-    - name: Extract metadata
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
-        tags: |
-          type=ref,event=branch
-          type=ref,event=pr
-          type=sha,prefix={{branch}}-
-          type=raw,value=latest,enable={{is_default_branch}}
-    
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-    
-    - name: Build and push Docker image
-      id: build
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        file: ./docker/Dockerfile
-        push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-        build-args: |
-          BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
-          VCS_REF=${{ github.sha }}
-          VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
-    
-    - name: Run Trivy vulnerability scanner on image
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: ${{ steps.meta.outputs.tags }}
-        format: 'sarif'
-        output: 'trivy-image-results.sarif'
-    
-    - name: Upload Trivy image scan results
-      uses: github/codeql-action/upload-sarif@v2
-      if: always()
-      with:
-        sarif_file: 'trivy-image-results.sarif'
 
-  # Infrastructure Deployment
-  deploy-infrastructure:
-    name: Deploy Infrastructure
+    - name: Build, tag, and push image to Amazon ECR
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+  deploy-dev:
     runs-on: ubuntu-latest
-    needs: build-and-push
-    if: github.ref == 'refs/heads/main'
-    environment: production
+    needs: build
+    if: github.ref == 'refs/heads/develop'
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-    
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.6.0
-    
-    - name: Terraform Init
-      run: |
-        cd terraform/environments/prod
-        terraform init \
-          -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-          -backend-config="key=flask-app/prod/terraform.tfstate" \
-          -backend-config="region=${{ env.AWS_REGION }}" \
-          -backend-config="dynamodb_table=${{ secrets.TF_STATE_DYNAMODB_TABLE }}"
-    
-    - name: Terraform Plan
-      run: |
-        cd terraform/environments/prod
-        terraform plan -out=tfplan \
-          -var="environment=prod" \
-          -var="region=${{ env.AWS_REGION }}" \
-          -var="cluster_name=${{ env.EKS_CLUSTER_NAME }}"
-    
-    - name: Terraform Apply
-      run: |
-        cd terraform/environments/prod
-        terraform apply -auto-approve tfplan
 
-  # Application Deployment
-  deploy-application:
-    name: Deploy Application
-    runs-on: ubuntu-latest
-    needs: [build-and-push, deploy-infrastructure]
-    if: github.ref == 'refs/heads/main'
-    environment: production
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-    
     - name: Install kubectl
       uses: azure/setup-kubectl@v3
       with:
         version: 'v1.28.0'
-    
+
     - name: Install Helm
       uses: azure/setup-helm@v3
       with:
-        version: 'v3.13.0'
-    
-    - name: Update kubeconfig
-      run: |
-        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
-    
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2
-    
-    - name: Deploy with Helm
-      run: |
-        helm upgrade --install flask-auth-app ${{ env.HELM_CHART_PATH }} \
-          --namespace flask-app --create-namespace \
-          --set image.repository=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }} \
-          --set image.tag=${{ needs.build-and-push.outputs.image-tag }} \
-          --set environment=production \
-          --values ${{ env.HELM_CHART_PATH }}/values-prod.yaml \
-          --wait --timeout=10m
-    
-    - name: Verify deployment
-      run: |
-        kubectl get pods -n flask-app
-        kubectl get services -n flask-app
-        kubectl get ingress -n flask-app
-    
-    - name: Run smoke tests
-      run: |
-        # Wait for deployment to be ready
-        kubectl wait --for=condition=available --timeout=300s deployment/flask-auth-app -n flask-app
-        
-        # Get service endpoint
-        ENDPOINT=$(kubectl get ingress flask-auth-app -n flask-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-        
-        # Run health check
-        curl -f http://$ENDPOINT/health || exit 1
-        echo "? Smoke tests passed!"
+        version: '3.12.0'
 
-  # Staging Deployment (for develop branch)
+    - name: Update kube config
+      run: aws eks update-kubeconfig --name flask-app-dev-cluster --region ${{ env.AWS_REGION }}
+
+    - name: Deploy to Development
+      env:
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        helm upgrade --install flask-app-dev ${{ env.HELM_CHART_PATH }} \
+          --namespace flask-app-dev \
+          --create-namespace \
+          --set image.tag=$IMAGE_TAG \
+          --set environment=dev \
+          --values ${{ env.HELM_CHART_PATH }}/values-dev.yaml
+
   deploy-staging:
-    name: Deploy to Staging
     runs-on: ubuntu-latest
-    needs: build-and-push
-    if: github.ref == 'refs/heads/develop'
-    environment: staging
+    needs: build
+    if: github.ref == 'refs/heads/main'
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-    
-    - name: Deploy Infrastructure (Staging)
-      run: |
-        cd terraform/environments/staging
-        terraform init \
-          -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-          -backend-config="key=flask-app/staging/terraform.tfstate" \
-          -backend-config="region=${{ env.AWS_REGION }}" \
-          -backend-config="dynamodb_table=${{ secrets.TF_STATE_DYNAMODB_TABLE }}"
-        
-        terraform plan -out=tfplan \
-          -var="environment=staging" \
-          -var="region=${{ env.AWS_REGION }}" \
-          -var="cluster_name=flask-app-cluster-staging"
-        
-        terraform apply -auto-approve tfplan
-    
-    - name: Deploy Application (Staging)
-      run: |
-        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name flask-app-cluster-staging
-        
-        helm upgrade --install flask-auth-app-staging ${{ env.HELM_CHART_PATH }} \
-          --namespace flask-app-staging --create-namespace \
-          --set image.repository=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }} \
-          --set image.tag=${{ needs.build-and-push.outputs.image-tag }} \
-          --set environment=staging \
-          --values ${{ env.HELM_CHART_PATH }}/values-staging.yaml \
-          --wait --timeout=10m
 
-  # Notification
-  notify:
-    name: Send Notifications
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+
+    - name: Update kube config
+      run: aws eks update-kubeconfig --name flask-app-staging-cluster --region ${{ env.AWS_REGION }}
+
+    - name: Deploy to Staging
+      env:
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        helm upgrade --install flask-app-staging ${{ env.HELM_CHART_PATH }} \
+          --namespace flask-app-staging \
+          --create-namespace \
+          --set image.tag=$IMAGE_TAG \
+          --set environment=staging \
+          --values ${{ env.HELM_CHART_PATH }}/values-staging.yaml
+
+  deploy-production:
     runs-on: ubuntu-latest
-    needs: [deploy-application, deploy-staging]
-    if: always()
+    needs: [deploy-staging]
+    if: github.ref == 'refs/heads/main'
+    environment: production
     
     steps:
-    - name: Notify Slack on Success
-      if: needs.deploy-application.result == 'success' || needs.deploy-staging.result == 'success'
-      uses: 8398a7/action-slack@v3
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
       with:
-        status: success
-        channel: '#devops-alerts'
-        text: |
-          ? Deployment successful!
-          Environment: ${{ github.ref == 'refs/heads/main' && 'Production' || 'Staging' }}
-          Commit: ${{ github.sha }}
-          Author: ${{ github.actor }}
-      env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-    
-    - name: Notify Slack on Failure
-      if: needs.deploy-application.result == 'failure' || needs.deploy-staging.result == 'failure'
-      uses: 8398a7/action-slack@v3
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v3
       with:
-        status: failure
-        channel: '#devops-alerts'
-        text: |
-          ? Deployment failed!
-          Environment: ${{ github.ref == 'refs/heads/main' && 'Production' || 'Staging' }}
-          Commit: ${{ github.sha }}
-          Author: ${{ github.actor }}
-          Please check the GitHub Actions logs.
+        version: 'v1.28.0'
+
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+
+    - name: Update kube config
+      run: aws eks update-kubeconfig --name flask-app-prod-cluster --region ${{ env.AWS_REGION }}
+
+    - name: Deploy to Production
       env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        helm upgrade --install flask-app-prod ${{ env.HELM_CHART_PATH }} \
+          --namespace flask-app-prod \
+          --create-namespace \
+          --set image.tag=$IMAGE_TAG \
+          --set environment=production \
+          --values ${{ env.HELM_CHART_PATH }}/values-prod.yaml
