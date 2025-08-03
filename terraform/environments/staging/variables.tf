@@ -82,7 +82,7 @@ variable "enable_vpc_flow_logs" {
 variable "allowed_cidr_blocks" {
   description = "List of CIDR blocks allowed to access the cluster"
   type        = list(string)
-  default     = ["0.0.0.0/0"]  # Should be restricted in real staging
+  default     = ["0.0.0.0/0"]
 }
 
 variable "enable_waf" {
@@ -125,7 +125,7 @@ variable "cluster_endpoint_public_access" {
 variable "cluster_endpoint_public_access_cidrs" {
   description = "List of CIDR blocks that can access the public cluster endpoint"
   type        = list(string)
-  default     = ["0.0.0.0/0"]  # Should be restricted in real staging
+  default     = ["0.0.0.0/0"]
 }
 
 variable "cluster_enabled_log_types" {
@@ -283,19 +283,19 @@ variable "rds_maintenance_window" {
 variable "rds_multi_az" {
   description = "Enable Multi-AZ deployment"
   type        = bool
-  default     = false  # Single AZ for staging cost optimization
+  default     = false
 }
 
 variable "rds_monitoring_interval" {
   description = "Enhanced monitoring interval"
   type        = number
-  default     = 0  # Disabled for staging
+  default     = 0
 }
 
 variable "rds_performance_insights_enabled" {
   description = "Enable Performance Insights"
   type        = bool
-  default     = false  # Disabled for staging
+  default     = false
 }
 
 # Storage Configuration
