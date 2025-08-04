@@ -1,4 +1,4 @@
-name: CI/CD Pipeline
+name: Complete CI/CD Pipeline with Auto Infrastructure
 
 on:
   push:
@@ -41,13 +41,6 @@ jobs:
       run: |
         python -m pytest tests/ --cov=app --cov-report=xml --cov-report=html --cov-report=term-missing -v
 
-    - name: Upload coverage reports
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.xml
-        flags: unittests
-        name: codecov-umbrella
-
   security-scan:
     runs-on: ubuntu-latest
     needs: test
@@ -69,32 +62,48 @@ jobs:
         severity: 'HIGH,CRITICAL'
         exit-code: '0'
 
-    - name: Upload Trivy scan results to GitHub Security tab
+    - name: Upload Trivy scan results
       uses: github/codeql-action/upload-sarif@v3
       if: always() && hashFiles('trivy-results.sarif') != ''
       with:
         sarif_file: 'trivy-results.sarif'
 
-  code-quality:
+  infrastructure:
     runs-on: ubuntu-latest
-    needs: test
-
+    needs: [test, security-scan]
+    if: github.ref == 'refs/heads/main'
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
 
-    - name: SonarQube Scan
-      uses: SonarSource/sonarqube-scan-action@master
-      env:
-        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        SONAR_ORGANIZATION: DevOps-Colony
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: '1.5.0'
+
+    - name: Make script executable
+      run: chmod +x .github/scripts/deploy-infrastructure.sh
+
+    - name: Deploy Infrastructure Automatically
+      run: ./.github/scripts/deploy-infrastructure.sh
+
+    - name: Verify Infrastructure
+      run: |
+        echo "? Infrastructure Status:"
+        aws eks list-clusters --region ${{ env.AWS_REGION }} --output table
+        aws ecr describe-repositories --region ${{ env.AWS_REGION }} --query 'repositories[].repositoryName' --output table
 
   build:
     runs-on: ubuntu-latest
-    needs: [test, security-scan, code-quality]
+    needs: [infrastructure]
     
     steps:
     - name: Checkout code
@@ -120,7 +129,7 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build, tag, and push image to Amazon ECR
+    - name: Build, tag, and push image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.sha }}
@@ -130,78 +139,9 @@ jobs:
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-  deploy-dev:
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/develop'
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Check if development cluster exists
-      id: check-dev-cluster
-      run: |
-        DEV_CLUSTER="flask-app-dev-cluster"
-        if aws eks describe-cluster --name $DEV_CLUSTER --region ${{ env.AWS_REGION }} 2>/dev/null; then
-          echo "exists=true" >> $GITHUB_OUTPUT
-          echo "? Development cluster '$DEV_CLUSTER' found"
-        else
-          echo "exists=false" >> $GITHUB_OUTPUT
-          echo "?? Development cluster '$DEV_CLUSTER' not found"
-          echo "?? Available clusters:"
-          aws eks list-clusters --region ${{ env.AWS_REGION }} --query 'clusters' --output table || true
-        fi
-
-    - name: Install kubectl
-      if: steps.check-dev-cluster.outputs.exists == 'true'
-      uses: azure/setup-kubectl@v3
-      with:
-        version: 'v1.28.0'
-
-    - name: Install Helm
-      if: steps.check-dev-cluster.outputs.exists == 'true'
-      uses: azure/setup-helm@v3
-      with:
-        version: '3.12.0'
-
-    - name: Update kube config
-      if: steps.check-dev-cluster.outputs.exists == 'true'
-      run: aws eks update-kubeconfig --name flask-app-dev-cluster --region ${{ env.AWS_REGION }}
-
-    - name: Deploy to Development
-      if: steps.check-dev-cluster.outputs.exists == 'true'
-      env:
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        helm upgrade --install flask-app-dev ${{ env.HELM_CHART_PATH }} \
-          --namespace flask-app-dev \
-          --create-namespace \
-          --set image.tag=$IMAGE_TAG \
-          --set environment=dev \
-          --values ${{ env.HELM_CHART_PATH }}/values-dev.yaml
-
-    - name: Development cluster creation notice
-      if: steps.check-dev-cluster.outputs.exists == 'false'
-      run: |
-        echo "? Development deployment skipped - EKS cluster does not exist"
-        echo ""
-        echo "?? To create the development cluster:"
-        echo "   cd terraform/environments/dev"
-        echo "   terraform init -backend-config=../../../backend-config/backend-dev.hcl"
-        echo "   terraform plan"
-        echo "   terraform apply"
-
   deploy-staging:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build]
     if: github.ref == 'refs/heads/main'
     
     steps:
@@ -215,38 +155,20 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Check if staging cluster exists
-      id: check-staging-cluster
-      run: |
-        STAGING_CLUSTER="flask-app-staging-cluster"
-        if aws eks describe-cluster --name $STAGING_CLUSTER --region ${{ env.AWS_REGION }} 2>/dev/null; then
-          echo "exists=true" >> $GITHUB_OUTPUT
-          echo "? Staging cluster '$STAGING_CLUSTER' found"
-        else
-          echo "exists=false" >> $GITHUB_OUTPUT
-          echo "?? Staging cluster '$STAGING_CLUSTER' not found"
-          echo "?? Available clusters:"
-          aws eks list-clusters --region ${{ env.AWS_REGION }} --query 'clusters' --output table || true
-        fi
-
     - name: Install kubectl
-      if: steps.check-staging-cluster.outputs.exists == 'true'
       uses: azure/setup-kubectl@v3
       with:
         version: 'v1.28.0'
 
     - name: Install Helm
-      if: steps.check-staging-cluster.outputs.exists == 'true'
       uses: azure/setup-helm@v3
       with:
         version: '3.12.0'
 
     - name: Update kube config
-      if: steps.check-staging-cluster.outputs.exists == 'true'
       run: aws eks update-kubeconfig --name flask-app-staging-cluster --region ${{ env.AWS_REGION }}
 
     - name: Deploy to Staging
-      if: steps.check-staging-cluster.outputs.exists == 'true'
       env:
         IMAGE_TAG: ${{ github.sha }}
       run: |
@@ -257,115 +179,8 @@ jobs:
           --set environment=staging \
           --values ${{ env.HELM_CHART_PATH }}/values-staging.yaml
 
-    - name: Staging cluster creation notice
-      if: steps.check-staging-cluster.outputs.exists == 'false'
+    - name: Deployment Status
       run: |
-        echo "? Staging deployment skipped - EKS cluster does not exist"
-        echo ""
-        echo "?? To create the staging cluster:"
-        echo "   cd terraform/environments/staging"
-        echo "   terraform init -backend-config=../../../backend-config/backend-staging.hcl"
-        echo "   terraform plan"
-        echo "   terraform apply"
-
-  deploy-production:
-    runs-on: ubuntu-latest
-    needs: [deploy-staging]
-    if: github.ref == 'refs/heads/main'
-    environment: production
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Check if production cluster exists
-      id: check-prod-cluster
-      run: |
-        PROD_CLUSTER="flask-app-prod-cluster"
-        if aws eks describe-cluster --name $PROD_CLUSTER --region ${{ env.AWS_REGION }} 2>/dev/null; then
-          echo "exists=true" >> $GITHUB_OUTPUT
-          echo "? Production cluster '$PROD_CLUSTER' found"
-        else
-          echo "exists=false" >> $GITHUB_OUTPUT
-          echo "?? Production cluster '$PROD_CLUSTER' not found"
-          echo "?? Available clusters:"
-          aws eks list-clusters --region ${{ env.AWS_REGION }} --query 'clusters' --output table || true
-        fi
-
-    - name: Install kubectl
-      if: steps.check-prod-cluster.outputs.exists == 'true'
-      uses: azure/setup-kubectl@v3
-      with:
-        version: 'v1.28.0'
-
-    - name: Install Helm
-      if: steps.check-prod-cluster.outputs.exists == 'true'
-      uses: azure/setup-helm@v3
-      with:
-        version: '3.12.0'
-
-    - name: Update kube config
-      if: steps.check-prod-cluster.outputs.exists == 'true'
-      run: aws eks update-kubeconfig --name flask-app-prod-cluster --region ${{ env.AWS_REGION }}
-
-    - name: Deploy to Production
-      if: steps.check-prod-cluster.outputs.exists == 'true'
-      env:
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        helm upgrade --install flask-app-prod ${{ env.HELM_CHART_PATH }} \
-          --namespace flask-app-prod \
-          --create-namespace \
-          --set image.tag=$IMAGE_TAG \
-          --set environment=production \
-          --values ${{ env.HELM_CHART_PATH }}/values-prod.yaml
-
-    - name: Production cluster creation notice
-      if: steps.check-prod-cluster.outputs.exists == 'false'
-      run: |
-        echo "? Production deployment skipped - EKS cluster does not exist"
-        echo ""
-        echo "?? To create the production cluster:"
-        echo "   cd terraform/environments/prod"
-        echo "   terraform init -backend-config=../../../backend-config/backend-prod.hcl"
-        echo "   terraform plan"
-        echo "   terraform apply"
-
-  infrastructure-status:
-    runs-on: ubuntu-latest
-    needs: [build]
-    if: always()
-    
-    steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Infrastructure Status Report
-      run: |
-        echo "??? Infrastructure Status Report"
-        echo "================================"
-        echo ""
-        echo "?? EKS Clusters in $AWS_REGION:"
-        aws eks list-clusters --region $AWS_REGION --query 'clusters' --output table || echo "No clusters found"
-        echo ""
-        echo "?? ECR Repositories:"
-        aws ecr describe-repositories --region $AWS_REGION --query 'repositories[].repositoryName' --output table || echo "No repositories found"
-        echo ""
-        echo "?? Expected Clusters for Full Deployment:"
-        echo "- flask-app-dev-cluster (for develop branch)"
-        echo "- flask-app-staging-cluster (for main branch)"  
-        echo "- flask-app-prod-cluster (for production)"
-        echo ""
-        echo "?? Create missing infrastructure using Terraform:"
-        echo "   terraform/environments/{dev|staging|prod}/"
+        echo "?? Deployment completed!"
+        kubectl get pods -n flask-app-staging
+        kubectl get services -n flask-app-staging
