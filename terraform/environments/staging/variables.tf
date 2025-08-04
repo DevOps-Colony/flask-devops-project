@@ -1,85 +1,56 @@
 ﻿variable "aws_region" {
-  description = "The AWS region to deploy resources into"
+  description = "AWS region to deploy into"
   type        = string
-}
-
-variable "project" {
-  description = "Project name prefix"
-  type        = string
+  default     = "ap-south-1"
 }
 
 variable "environment" {
   description = "Deployment environment"
   type        = string
-}
-
-variable "vpc_cidr_block" {
-  description = "CIDR block for the VPC"
-  type        = string
+  default     = "staging"
 }
 
 variable "availability_zones" {
-  description = "List of availability zones"
-  type        = list(string)
+  type    = list(string)
+  default = ["ap-south-1a", "ap-south-1b"]
 }
 
 variable "public_subnet_cidrs" {
-  description = "CIDRs for public subnets"
-  type        = list(string)
+  type    = list(string)
+  default = ["10.0.1.0/24", "10.0.2.0/24"]
 }
 
 variable "private_subnet_cidrs" {
-  description = "CIDRs for private subnets"
-  type        = list(string)
+  type    = list(string)
+  default = ["10.0.3.0/24", "10.0.4.0/24"]
 }
 
 variable "eks_cluster_name" {
-  type        = string
-  description = "EKS Cluster name"
+  type    = string
+  default = "flask-staging-cluster"
 }
 
 variable "node_group_name" {
-  type        = string
-  description = "Node group name"
+  type    = string
+  default = "staging-node-group"
 }
 
 variable "instance_types" {
-  type        = list(string)
-  description = "Instance types for EKS worker nodes"
+  type    = list(string)
+  default = ["t3.medium"]
 }
 
 variable "desired_capacity" {
-  type        = number
-  description = "Desired node count"
+  type    = number
+  default = 2
 }
 
 variable "min_size" {
-  type        = number
-  description = "Minimum node count"
+  type    = number
+  default = 1
 }
 
 variable "max_size" {
-  type        = number
-  description = "Maximum node count"
-}
-
-variable "db_name" {
-  description = "Name of the RDS database"
-  type        = string
-}
-
-variable "db_username" {
-  description = "Username for the RDS database"
-  type        = string
-}
-
-variable "db_password" {
-  description = "Password for the RDS database"
-  type        = string
-  sensitive   = true
-}
-
-variable "db_instance_class" {
-  description = "RDS instance type"
-  type        = string
+  type    = number
+  default = 3
 }
