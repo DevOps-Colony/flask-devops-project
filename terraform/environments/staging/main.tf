@@ -5,6 +5,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.1"
+    }
   }
   backend "s3" {}
 }
@@ -153,23 +157,6 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private[var.single_nat_gateway ? 0 : count.index].id
 }
 
-# EKS Cluster Security Group
-resource "aws_security_group" "eks_cluster" {
-  name_prefix = "${var.project_name}-${var.environment}-eks-cluster-"
-  vpc_id      = aws_vpc.main.id
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-eks-cluster-sg"
-  }
-}
-
 # EKS Cluster IAM Role
 resource "aws_iam_role" "eks_cluster" {
   name = "${var.project_name}-${var.environment}-eks-cluster-role"
@@ -233,14 +220,8 @@ resource "aws_eks_cluster" "main" {
   version  = var.cluster_version
 
   vpc_config {
-    subnet_ids              = concat(aws_subnet.public[*].id, aws_subnet.private[*].id)
-    endpoint_private_access = var.cluster_endpoint_private_access
-    endpoint_public_access  = var.cluster_endpoint_public_access
-    public_access_cidrs     = var.cluster_endpoint_public_access_cidrs
-    security_group_ids      = [aws_security_group.eks_cluster.id]
+    subnet_ids = concat(aws_subnet.public[*].id, aws_subnet.private[*].id)
   }
-
-  enabled_cluster_log_types = var.cluster_enabled_log_types
 
   depends_on = [
     aws_iam_role_policy_attachment.eks_cluster_policy,
@@ -251,7 +232,7 @@ resource "aws_eks_cluster" "main" {
   }
 }
 
-# EKS Node Groups
+# EKS Node Group
 resource "aws_eks_node_group" "main" {
   for_each = var.node_groups
 
@@ -275,23 +256,6 @@ resource "aws_eks_node_group" "main" {
     max_unavailable_percentage = each.value.update_config.max_unavailable_percentage
   }
 
-  dynamic "taint" {
-    for_each = each.value.taints
-    content {
-      key    = taint.value.key
-      value  = taint.value.value
-      effect = taint.value.effect
-    }
-  }
-
-  labels = merge(
-    {
-      Environment = var.environment
-      NodeGroup   = each.key
-    },
-    each.value.labels
-  )
-
   depends_on = [
     aws_iam_role_policy_attachment.eks_worker_node_policy,
     aws_iam_role_policy_attachment.eks_cni_policy,
@@ -300,129 +264,5 @@ resource "aws_eks_node_group" "main" {
 
   tags = {
     Name = "${var.cluster_name}-${each.key}-node-group"
-  }
-}
-
-# RDS Subnet Group (if RDS is enabled)
-resource "aws_db_subnet_group" "main" {
-  count = var.enable_rds ? 1 : 0
-  
-  name       = "${var.project_name}-${var.environment}-db-subnet-group"
-  subnet_ids = aws_subnet.private[*].id
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-db-subnet-group"
-  }
-}
-
-# RDS Security Group
-resource "aws_security_group" "rds" {
-  count = var.enable_rds ? 1 : 0
-  
-  name_prefix = "${var.project_name}-${var.environment}-rds-"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port       = var.rds_port
-    to_port         = var.rds_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.eks_cluster.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-rds-sg"
-  }
-}
-
-# RDS Instance
-resource "aws_db_instance" "main" {
-  count = var.enable_rds ? 1 : 0
-  
-  identifier     = "${var.project_name}-${var.environment}-db"
-  engine         = var.rds_engine
-  engine_version = var.rds_engine_version
-  instance_class = var.rds_instance_class
-
-  allocated_storage     = var.rds_allocated_storage
-  max_allocated_storage = var.rds_max_allocated_storage
-  storage_type          = var.rds_storage_type
-  storage_encrypted     = true
-
-  db_name  = var.rds_db_name
-  username = var.rds_username
-  password = random_password.rds_password[0].result
-  port     = var.rds_port
-
-  vpc_security_group_ids = [aws_security_group.rds[0].id]
-  db_subnet_group_name   = aws_db_subnet_group.main[0].name
-
-  backup_retention_period = var.rds_backup_retention_period
-  backup_window          = var.rds_backup_window
-  maintenance_window     = var.rds_maintenance_window
-
-  multi_az               = var.rds_multi_az
-  publicly_accessible    = false
-  
-  monitoring_interval = var.rds_monitoring_interval
-  performance_insights_enabled = var.rds_performance_insights_enabled
-
-  skip_final_snapshot = true
-  deletion_protection = false
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-db"
-  }
-}
-
-# Random password for RDS
-resource "random_password" "rds_password" {
-  count = var.enable_rds ? 1 : 0
-  
-  length  = 16
-  special = true
-}
-
-# S3 Bucket (if enabled)
-resource "aws_s3_bucket" "main" {
-  count = var.create_s3_bucket ? 1 : 0
-  
-  bucket = "${var.project_name}-${var.environment}-bucket-${random_id.bucket_suffix[0].hex}"
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-bucket"
-  }
-}
-
-resource "random_id" "bucket_suffix" {
-  count = var.create_s3_bucket ? 1 : 0
-  
-  byte_length = 4
-}
-
-resource "aws_s3_bucket_versioning" "main" {
-  count = var.create_s3_bucket ? 1 : 0
-  
-  bucket = aws_s3_bucket.main[0].id
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "main" {
-  count = var.create_s3_bucket ? 1 : 0
-  
-  bucket = aws_s3_bucket.main[0].id
-
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
   }
 }
