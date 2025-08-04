@@ -1,4 +1,4 @@
-name: Complete CI/CD Pipeline with Auto Infrastructure
+name: Flask DevOps Project - Enterprise CI/CD
 
 on:
   push:
@@ -10,16 +10,19 @@ permissions:
   contents: read
   security-events: write
   actions: read
-  pull-requests: read
+  pull-requests: write
+  id-token: write
 
 env:
+  TF_VERSION: "1.5.0"
   AWS_REGION: ap-south-1
   ECR_REPOSITORY: flask-auth-app
   HELM_CHART_PATH: ./helm/flask-app
   SONAR_PROJECT_KEY: DevOps-Colony_flask-devops-project
 
 jobs:
-  test:
+  # Code Quality & Security
+  quality-gates:
     runs-on: ubuntu-latest
     
     steps:
@@ -37,22 +40,18 @@ jobs:
         pip install -r app/requirements.txt
         pip install pytest pytest-cov pytest-flask
 
-    - name: Run tests with coverage
+    - name: Run unit tests
       run: |
         python -m pytest tests/ --cov=app --cov-report=xml --cov-report=html --cov-report=term-missing -v
 
-  security-scan:
-    runs-on: ubuntu-latest
-    needs: test
-    permissions:
-      contents: read
-      security-events: write
+    - name: SonarCloud Scan
+      uses: SonarSource/sonarqube-scan-action@master
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        SONAR_ORGANIZATION: DevOps-Colony
 
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Run Trivy vulnerability scanner
+    - name: Trivy vulnerability scanner
       uses: aquasecurity/trivy-action@master
       with:
         scan-type: 'fs'
@@ -60,54 +59,30 @@ jobs:
         format: 'sarif'
         output: 'trivy-results.sarif'
         severity: 'HIGH,CRITICAL'
-        exit-code: '0'
 
-    - name: Upload Trivy scan results
+    - name: Upload Trivy results
       uses: github/codeql-action/upload-sarif@v3
-      if: always() && hashFiles('trivy-results.sarif') != ''
+      if: always()
       with:
         sarif_file: 'trivy-results.sarif'
 
-  infrastructure:
+  # Terraform Infrastructure
+  terraform-plan:
     runs-on: ubuntu-latest
-    needs: [test, security-scan]
-    if: github.ref == 'refs/heads/main'
+    needs: quality-gates
+    if: github.event_name == 'pull_request'
+    strategy:
+      matrix:
+        environment: [staging]
     
     steps:
-    - name: Checkout code
+    - name: Checkout
       uses: actions/checkout@v4
-
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
       with:
-        terraform_version: '1.5.0'
-
-    - name: Make script executable
-      run: chmod +x .github/scripts/deploy-infrastructure.sh
-
-    - name: Deploy Infrastructure Automatically
-      run: ./.github/scripts/deploy-infrastructure.sh
-
-    - name: Verify Infrastructure
-      run: |
-        echo "? Infrastructure Status:"
-        aws eks list-clusters --region ${{ env.AWS_REGION }} --output table
-        aws ecr describe-repositories --region ${{ env.AWS_REGION }} --query 'repositories[].repositoryName' --output table
-
-  build:
-    runs-on: ubuntu-latest
-    needs: [infrastructure]
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+        terraform_version: ${{ env.TF_VERSION }}
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -116,14 +91,75 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Create ECR repository if it doesn't exist
+    - name: Terraform Init
+      working-directory: terraform/environments/${{ matrix.environment }}
+      run: terraform init -backend-config="../../backend-config/backend-${{ matrix.environment }}.hcl"
+
+    - name: Terraform Plan
+      working-directory: terraform/environments/${{ matrix.environment }}
       run: |
-        aws ecr describe-repositories --repository-names $ECR_REPOSITORY --region $AWS_REGION || \
-        aws ecr create-repository \
-          --repository-name $ECR_REPOSITORY \
-          --region $AWS_REGION \
-          --image-scanning-configuration scanOnPush=true \
-          --encryption-configuration encryptionType=AES256
+        terraform plan -out=tfplan
+        terraform show -no-color tfplan > plan-output.txt
+
+    - name: Comment PR with plan
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const plan = fs.readFileSync('terraform/environments/${{ matrix.environment }}/plan-output.txt', 'utf8');
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: `## Terraform Plan - ${{ matrix.environment }}\n\`\`\`\n${plan}\n\`\`\``
+          });
+
+  # Infrastructure Deployment
+  terraform-apply:
+    runs-on: ubuntu-latest
+    needs: quality-gates
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Deploy Infrastructure - Staging
+      working-directory: terraform/environments/staging
+      run: |
+        terraform init -backend-config="../../backend-config/backend-staging.hcl"
+        terraform plan -out=tfplan
+        terraform apply -auto-approve tfplan
+
+  # Container Build & Push
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
 
     - name: Login to Amazon ECR
       id: login-ecr
@@ -134,18 +170,19 @@ jobs:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.sha }}
       run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f docker/Dockerfile .
         docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-  deploy-staging:
+  # Application Deployment
+  deploy-application:
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: build-and-push
     if: github.ref == 'refs/heads/main'
     
     steps:
-    - name: Checkout code
+    - name: Checkout
       uses: actions/checkout@v4
 
     - name: Configure AWS credentials
@@ -165,13 +202,11 @@ jobs:
       with:
         version: '3.12.0'
 
-    - name: Update kube config
-      run: aws eks update-kubeconfig --name flask-app-staging-cluster --region ${{ env.AWS_REGION }}
-
-    - name: Deploy to Staging
+    - name: Deploy to staging
       env:
         IMAGE_TAG: ${{ github.sha }}
       run: |
+        aws eks update-kubeconfig --name flask-app-staging-cluster --region ${{ env.AWS_REGION }}
         helm upgrade --install flask-app-staging ${{ env.HELM_CHART_PATH }} \
           --namespace flask-app-staging \
           --create-namespace \
@@ -179,8 +214,8 @@ jobs:
           --set environment=staging \
           --values ${{ env.HELM_CHART_PATH }}/values-staging.yaml
 
-    - name: Deployment Status
+    - name: Post-deployment verification
       run: |
-        echo "?? Deployment completed!"
         kubectl get pods -n flask-app-staging
         kubectl get services -n flask-app-staging
+        echo "? Deployment completed successfully!"
