@@ -219,3 +219,4 @@ jobs:
         kubectl get pods -n flask-app-staging
         kubectl get services -n flask-app-staging
         echo "? Deployment completed successfully!"
+        #hello
